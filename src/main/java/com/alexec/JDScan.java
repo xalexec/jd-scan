@@ -97,10 +97,10 @@ public class JDScan {
      * @return
      */
     private boolean needReLogin(Config config) {
-        return checkLogin() || null == config.getCookieTime() ||
+        return !checkLogin() || (null == config.getCookieTime() ||
                 DateUtil.parseDateTime(config.getCookieTime()).
                         isBefore(new Date(System.currentTimeMillis()
-                                - config.getCookieExpiry() * 60 * 1000));
+                                - config.getCookieExpiry() * 60 * 1000)));
     }
     // endregion
 
