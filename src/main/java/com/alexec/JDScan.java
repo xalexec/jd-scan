@@ -120,6 +120,7 @@ public class JDScan {
                     Goods goods = blockingQueue.take();
                     for (int i = 0; i < 3; i++) {
                         synchronized (this) {
+                            log.info("开始购买{}，第{}次尝试", goods.getSku(), i);
                             for (int j = 0; j < goods.getNum(); j++) {
                                 addCart(goods);
                             }
@@ -159,12 +160,14 @@ public class JDScan {
         header.put("Referer", "http://trade.jd.com/shopping/order/getOrderInfo.action");
 
         Response response = Http.getResponse(Constant.SUBMIT_URL, map, header);
-        log.info(response.toString());
         if (Constant.SUCCESS_PATTERN.matcher(response.getBody()).find()) {
             sendMessage(Message.builder()
                     .text(goods.getName() + "已经下单成功")
                     .desp("请去支付" + DateUtil.formatDateTime(new Date()))
                     .build());
+        } else {
+            log.info("下单失败，失败原因请查看输出");
+            log.info(response.toString());
         }
     }
 
@@ -175,7 +178,7 @@ public class JDScan {
      * @return
      */
     private boolean addCart(Goods goods) {
-        Response response = Http.getResponse(String.format(Constant.CART_URL, goods.getSku()));
+        Http.getResponse(StrUtil.format(Constant.CART_URL, goods.getSku()));
         return false;
     }
 
@@ -230,11 +233,10 @@ public class JDScan {
                 log.info("扫码超时，请重新开始");
                 System.exit(0);
             }
-            Response response = Http.getResponse(Constant.QR_CHECK_URL
-                    .concat("?callback=" + System.currentTimeMillis())
-                    .concat("&appid=133")
-                    .concat("&token=" + cookie.getValue())
-                    .concat("&_=" + System.currentTimeMillis()), null, map);
+            Response response = Http.getResponse(StrUtil.format(Constant.QR_CHECK_URL,
+                    System.currentTimeMillis(),
+                    cookie.getValue(),
+                    System.currentTimeMillis()), null, map);
             JSONObject res = parseJSONPtoMap(response.getBody());
             if (res != null && res.get("code").equals(200)) {
                 Storage.config.setTicket(res.get("ticket").toString());
@@ -256,8 +258,8 @@ public class JDScan {
         Map<String, String> map = new HashMap<>();
         map.put("Host", "passport.jd.com");
         map.put("Referer", "https://passport.jd.com/uc/login?ltype=logout");
-        Response response = Http.getResponse(Constant.QR_TICKET_VALIDATION_URL
-                .concat("?t=" + Storage.config.getTicket()), null, map);
+        Response response = Http.getResponse(StrUtil.format(Constant.QR_TICKET_VALIDATION_URL
+                , Storage.config.getTicket()), null, map);
         Storage.config.setIsLogin(true);
         Storage.config.setCookieTime(DateUtil.formatDateTime(new Date()));
         saveData();
@@ -284,8 +286,8 @@ public class JDScan {
     private boolean checkLogin() {
         Map<String, String> header = new HashMap<>();
         header.put("Referer", "https://www.jd.com/");
-        Response response = Http.getResponse(Constant.CHECK_LOGION_URL
-                .concat("&_=" + System.currentTimeMillis()), null, header);
+        Response response = Http.getResponse(StrUtil.format(Constant.CHECK_LOGION_URL
+                , System.currentTimeMillis()), null, header);
 
         if (Constant.LOGIN_PATTERN.matcher(response.getBody()).find()) {
             return true;
@@ -294,7 +296,7 @@ public class JDScan {
     }
 
     /**
-     * 获取预下单信息，使用 Firefox chrome 会有问题
+     * 获取预下单信息，使用 Firefox，chrome 会有问题
      */
     private void getPreSumbit() {
         FirefoxOptions options = new FirefoxOptions();
@@ -305,7 +307,6 @@ public class JDScan {
             if (Constant.LOGION_URL.startsWith(cookie.getDomain(), "https://".length()) ||
                     Constant.LOGION_URL.startsWith(cookie.getDomain(), "https://passport.".length())) {
                 org.openqa.selenium.Cookie cookie1 = new org.openqa.selenium.Cookie(
-                        //(String name, String value, String domain, String path, Date expiry, boolean isSecure, boolean isHttpOnly)
                         cookie.getName(), cookie.getValue(), cookie.getDomain(),
                         cookie.getPath(), cookie.getExpiryDate(), cookie.isSecure());
                 driver.manage().addCookie(cookie1);
@@ -399,12 +400,11 @@ public class JDScan {
 
                 e.execute(() -> {
                     try {
-                        //https://c0.3.cn/stocks?type=getstocks&area=6_303_36780&d=jQuery155331123123&_=123123123&skuIds=100006784140,11609510701&buyNum=1
-                        String url = Constant.STOCK_URL.concat("?type=getstocks&")
-                                .concat("&area=" + Storage.config.getArea())
-                                .concat("&callback=jQuery" + System.currentTimeMillis())
-                                .concat("&_=" + System.currentTimeMillis())
-                                .concat("&skuIds=" + stringBuilder.substring(0, stringBuilder.length() - 1));
+                        String url = StrUtil.format(Constant.STOCKS_URL,
+                                Storage.config.getArea(),
+                                System.currentTimeMillis(),
+                                System.currentTimeMillis(),
+                                stringBuilder.toString());
 
                         Response response = Http.getResponse(url);
                         if (null == response) {
@@ -420,7 +420,7 @@ public class JDScan {
                             if (blockingQueue.contains(goods)) {
                                 continue;
                             }
-                            log.info(goods.getSku() + "有货，开始下单购买");
+                            log.info("{}有货，开始下单购买", goods.getSku());
                             if (!blockingQueue.offer(goods)) {
                                 log.info("购买队列满放弃购买");
                             }
@@ -428,22 +428,12 @@ public class JDScan {
                     } finally {
                         latch.countDown();
                     }
-//                            if (!Constant.STOCK_STATE_PATTERN.matcher(json.get(sku).toString()).find()) {
-//                                Goods goods = Storage.goodsMap.get(sku);
-//                                if (!blockingQueue.contains(goods)) {
-//                                    log.info(goods.getSku() + "有货，开始下单购买");
-//                                    if (!blockingQueue.offer(goods)) {
-//                                        log.info("购买队列满放弃购买");
-//                                    }
-//                                }
-//                            }
-
-
                 });
             }
             try {
                 latch.await(3, TimeUnit.SECONDS);
-                log.info("第" + count.incrementAndGet() + "次查询完成，用时:" + (System.currentTimeMillis() - start) + "ms");
+                log.info("第{}次查询完成，在售数量:{}，用时:{}ms", count.incrementAndGet(),
+                        goodsCount, System.currentTimeMillis() - start);
             } catch (
                     InterruptedException ex) {
                 ex.printStackTrace();
@@ -486,7 +476,6 @@ public class JDScan {
         ExecutorService e = new ThreadPoolExecutor(50, 100,
                 0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(300),
                 new NamedThreadFactory("check-stock-executor", false));
-        //ScheduledThreadPoolExecutor se = new ScheduledThreadPoolExecutor(1, new NamedThreadFactory("check-stock-scheduled"));
         ScheduledExecutorService se = Executors.newSingleThreadScheduledExecutor(
                 new NamedThreadFactory("scheduled-check-single-pool", false));
         AtomicInteger count = new AtomicInteger(0);
@@ -501,21 +490,17 @@ public class JDScan {
                 }
                 e.execute(() -> {
                     try {
-                        String url = Constant.STOCK_URL.concat("skuId=" + goods.getSku())
-                                .concat("&venderId=" + goods.getVenderId())
-                                .concat("&cat=" + goods.getCat())
-                                .concat("&area=" + Storage.config.getArea())
-                                .concat("&buyNum=" + goods.getNum());
+                        String url = StrUtil.format(Constant.STOCK_URL, goods.getSku(), goods.getVenderId(),
+                                goods.getCat(), Storage.config.getArea(), goods.getNum());
                         Response response = Http.getResponse(url);
                         if (!Constant.STOCK_STATE_PATTERN.matcher(response.getBody()).find()) {
                             if (!blockingQueue.contains(goods)) {
-                                log.info(goods.getSku() + "有货，开始下单购买");
+                                log.info("{}有货，开始下单购买", goods.getSku());
                                 if (!blockingQueue.offer(goods)) {
                                     log.info("购买队列满放弃购买");
                                 }
                             }
                         }
-                        //log.info("第" + i.incrementAndGet() + "," + goods.getName());
                     } catch (Exception ex) {
                         ex.printStackTrace();
                     } finally {
@@ -525,7 +510,7 @@ public class JDScan {
             }
             try {
                 latch.await(3, TimeUnit.SECONDS);
-                log.info("第" + count.incrementAndGet() + "次查询完成，用时:" + (System.currentTimeMillis() - start) + "ms");
+                log.info("第{}次查询完成，用时:{}ms", count.incrementAndGet(), System.currentTimeMillis() - start);
             } catch (InterruptedException ex) {
                 ex.printStackTrace();
             }
@@ -540,7 +525,9 @@ public class JDScan {
                 0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(500),
                 new NamedThreadFactory("init-goods-executor", false));
         CountDownLatch latch = new CountDownLatch(goodsList.length);
-        AtomicInteger count = new AtomicInteger(0);
+        AtomicInteger stockCount = new AtomicInteger(0);
+        AtomicInteger takeOffCount = new AtomicInteger(0);
+
         for (String item : goodsList) {
             e.execute(() -> {
                 try {
@@ -552,7 +539,7 @@ public class JDScan {
                     } else {
                         goods.setNum(1);
                     }
-                    Response response = Http.getResponse(String.format(Constant.GOODS_URL, goods.getSku()));
+                    Response response = Http.getResponse(StrUtil.format(Constant.GOODS_URL, goods.getSku()));
                     String body = response.getBody();
                     Matcher goodsNameMatcher = Constant.GOODS_NAME_PATTERN.matcher(body);
                     if (goodsNameMatcher.find()) {
@@ -564,7 +551,8 @@ public class JDScan {
                         try {
                             Storage.goodsMap.remove(goods.getSku());
                         } finally {
-                            log.info(goods.getName() + "已经下架，总下架数" + count.incrementAndGet());
+                            log.info("sku:{}，「{}」已经下架，总下架数{}", goods.getSku(),
+                                    goods.getName(), takeOffCount.incrementAndGet());
                             latch.countDown();
                             return;
                         }
@@ -577,6 +565,8 @@ public class JDScan {
                     if (catMatcher.find()) {
                         goods.setCat(catMatcher.group(1));
                     }
+                    log.info("sku:{}，「{}」在售，总在售数{}", goods.getSku(),
+                            goods.getName(), stockCount.incrementAndGet());
                     Storage.goodsMap.put(goods.getSku(), goods);
                 } finally {
                     latch.countDown();
@@ -605,7 +595,8 @@ public class JDScan {
             Map<String, String> map = new HashMap<>();
             map.put("text", new URLEncoder().encode(message.getText(), Charset.forName("utf-8")));
             map.put("desp", new URLEncoder().encode(message.getDesp(), Charset.forName("utf-8")));
-            Http.getResponse(String.format(Constant.FTQQ_URL, Storage.config.getSckey()), map, null);
+
+            Http.getResponse(StrUtil.format(Constant.FTQQ_URL, Storage.config.getSckey()), map, null);
             log.info("发送下单消息");
         }
     }

@@ -17,8 +17,6 @@ public class Main {
         jd.buy();
         // TODO
         // 二维码在某些字体上是方形的，而且大小不可调，现在用微信扫好扫一点
-        // 购物改数量
         // 风控会使用 webGL
-        // checklogin
     }
 }
