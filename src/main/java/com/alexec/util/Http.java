@@ -234,6 +234,9 @@ public class Http {
                             .setExpectContinueEnabled(true)
                             .setTargetPreferredAuthSchemes(Arrays.asList(AuthSchemes.NTLM, AuthSchemes.DIGEST))
                             .setProxyPreferredAuthSchemes(Arrays.asList(AuthSchemes.BASIC))
+                            .setSocketTimeout(3000)
+                            .setConnectTimeout(3000)
+                            .setConnectionRequestTimeout(3000)
                             .build();
 
                     // Create an HttpClient with the given custom dependencies and configuration.

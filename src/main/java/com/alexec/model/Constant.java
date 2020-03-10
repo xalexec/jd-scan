@@ -19,8 +19,12 @@ public final class Constant {
 
     public final static String ORDER_URL = "https://trade.jd.com/shopping/order/getOrderInfo.action";
     public final static String SUBMIT_URL = "https://trade.jd.com/shopping/order/submitOrder.action";
-    public final static String CART_URL = "https://cart.jd.com/gate.action?pid={}&pcount=1&ptype=1";
-    public final static String CHANGE_CART_URL = "https://cart.jd.com/changeNum.action";
+    public final static String ADD_CART_URL = "https://cart.jd.com/gate.action?callback=jQuery{}&pid={}&f=3&ptype=1&pcount=1&_={}";
+
+    public final static String CART_URL = "https://cart.jd.com/cart?rd={}";
+    public final static String CHANGE_NUM_CART_URL = "https://cart.jd.com/changeNum.action";
+    public final static String SELECT_GOODS_URL = "https://cart.jd.com/selectItem.action";
+    public final static String CANCEL_ALL_GOODS_URL = "https://cart.jd.com/cancelAllItem.action";
 
     public final static String FTQQ_URL = "https://sc.ftqq.com/{}.send";
 
@@ -32,5 +36,8 @@ public final class Constant {
     public final static Pattern SUCCESS_PATTERN = Pattern.compile("\"success\": ?true");
     public final static Pattern GOODS_NAME_PATTERN = Pattern.compile("name: '((:?\\\\u(:?[a-z]|[0-9]){4})+)'");
     public final static Pattern LOGIN_PATTERN = Pattern.compile("\"IsAuthenticated\":true");
+    public final static Pattern CHANGE_NUM_PATTERN = Pattern.compile("increment_(\\d+)_(\\d+)_(\\d+)_(\\d+)_\\d+(?:_(\\d+))?");
+    public final static Pattern CART_SUCCESS_PATTERN = Pattern.compile("\"flag\":true");
+    public final static Pattern CHANGE_CART_NUM_SUCCESS_PATTERN = Pattern.compile("\"sortedWebCartResult\":\\{\"achieveSevenState\":2");
 
 }

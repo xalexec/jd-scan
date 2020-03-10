@@ -1,5 +1,6 @@
 # 京东库存扫描
 ## 说明
+
 配置在 application.properties 中
 
 使用需要安装 firefox geckodriver https://github.com/mozilla/geckodriver/releases

@@ -10,9 +10,16 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 public class Goods {
+    // pid = sku
     private String sku;
+    private String name;
     private Integer num;
     private String cat;
     private String venderId;
-    private String name;
+    private String cartVenderId;
+    private String ptype;
+    private String targetId;
+    private String promoID;
+    private boolean inCart;
+    private Integer cartNum;
 }

@@ -15,12 +15,14 @@ import com.alexec.model.*;
 import com.alexec.util.Http;
 import com.alexec.util.QRCodeUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.http.HttpStatus;
 import org.apache.http.cookie.Cookie;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.firefox.FirefoxDriver;
 import org.openqa.selenium.firefox.FirefoxOptions;
+import org.openqa.selenium.firefox.FirefoxProfile;
 
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -31,8 +33,8 @@ import java.util.regex.Matcher;
 
 @Slf4j
 public class JDScan {
-    BlockingQueue<Goods> blockingQueue = new LinkedBlockingDeque(10);
-
+    BlockingQueue<Goods> buyBlockingQueue = new ArrayBlockingQueue(10);
+    CountDownLatch addCartLatch = new CountDownLatch(1);
     // region 初始化
 
     /**
@@ -103,7 +105,6 @@ public class JDScan {
                                 - config.getCookieExpiry() * 60 * 1000)));
     }
     // endregion
-
     // region 下单相关
 
     /**
@@ -117,14 +118,15 @@ public class JDScan {
             for (; ; ) {
                 try {
                     // 重试三次
-                    Goods goods = blockingQueue.take();
+                    Goods goods = buyBlockingQueue.take();
                     for (int i = 0; i < 3; i++) {
                         synchronized (this) {
-                            log.info("开始购买{}，第{}次尝试", goods.getSku(), i);
-                            for (int j = 0; j < goods.getNum(); j++) {
-                                addCart(goods);
+                            log.info("开始第{}次尝试购买{}「{}」，", i + 1, goods.getSku(), goods.getName());
+                            selectGoods(goods);
+                            if (!submit(goods)) {
+                                cancelAllGoods();
+                                TimeUnit.MILLISECONDS.sleep(700);
                             }
-                            submit(goods);
                         }
                     }
                 } catch (InterruptedException e) {
@@ -139,7 +141,7 @@ public class JDScan {
      *
      * @param goods
      */
-    private void submit(Goods goods) {
+    private boolean submit(Goods goods) {
         Map<String, String> map = new HashMap<>();
         map.put("overseaPurchaseCookies", "");
         map.put("submitOrderParam.payPassword", converPassword(Storage.config.getPassword()));
@@ -165,10 +167,140 @@ public class JDScan {
                     .text(goods.getName() + "已经下单成功")
                     .desp("请去支付" + DateUtil.formatDateTime(new Date()))
                     .build());
+            return true;
         } else {
-            log.info("下单失败，失败原因请查看输出");
+            log.info("{}「{}」下单失败，失败原因请查看输出", goods.getSku(), goods.getName());
             log.info(response.toString());
         }
+        return false;
+    }
+
+    /**
+     * 修改购物车中的数量
+     * @param goods
+     * @return
+     */
+    private synchronized boolean changeCartNum(Goods goods) {
+        Map<String, String> header = new HashMap<>();
+        header.put("Referer", "https://cart.jd.com/cart");
+
+        Map<String, String> map = new HashMap<>();
+        map.put("t", "0");
+        map.put("venderId", goods.getCartVenderId());
+        map.put("pid", goods.getSku());
+        map.put("pcount", String.valueOf(goods.getNum()));
+        map.put("ptype", goods.getPtype());
+        map.put("targetId", goods.getTargetId());
+        map.put("promoID", goods.getPromoID());
+        map.put("outSkus", "");
+        map.put("random", String.valueOf(System.currentTimeMillis()));
+        map.put("locationId", Storage.config.getArea());
+
+        Response response = Http.getResponse(Constant.CHANGE_NUM_CART_URL, map, header);
+        try {
+            TimeUnit.MILLISECONDS.sleep(200);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        if (Constant.CHANGE_CART_NUM_SUCCESS_PATTERN.matcher(response.getBody()).find()) {
+            return true;
+        } else {
+            log.info("sku:{}，「{}」修改数量失败", goods.getSku(), goods.getName());
+        }
+        return false;
+    }
+
+    /**
+     * 取消购物车所有商品勾选
+     */
+    private void cancelAllGoods() {
+        Map<String, String> header = new HashMap<>();
+        header.put("Referer", "https://cart.jd.com/cart");
+
+        Map<String, String> map = new HashMap<>();
+        map.put("t", "0");
+        map.put("outSkus", "");
+        map.put("random", String.valueOf(System.currentTimeMillis()));
+        map.put("locationId", Storage.config.getArea());
+        Http.getResponse(Constant.CANCEL_ALL_GOODS_URL, map, header);
+    }
+
+    /**
+     * 选中购物车中的商品
+     *
+     * @param goods
+     */
+    private void selectGoods(Goods goods) {
+        Map<String, String> header = new HashMap<>();
+        header.put("Referer", "https://cart.jd.com/cart");
+
+        Map<String, String> map = new HashMap<>();
+        map.put("outSkus", "");
+        map.put("pid", goods.getSku());
+        map.put("ptype", goods.getPtype());
+        map.put("targetId", goods.getTargetId());
+        map.put("promoID", goods.getPromoID());
+        map.put("venderId", goods.getCartVenderId());
+        map.put("t", "0");
+
+        Http.getResponse(Constant.SELECT_GOODS_URL, map, header);
+    }
+
+    /**
+     * 获取购物车中的商品详情
+     */
+    private void getCartGoods() {
+        Response response = Http.getResponse(StrUtil.format(Constant.CART_URL, System.currentTimeMillis()));
+        Matcher matcher = Constant.CHANGE_NUM_PATTERN.matcher(response.getBody());
+        while (matcher.find()) {
+            String sku = matcher.group(2);
+            Goods goods = Storage.goodsMap.get(sku);
+            if (goods != null) {
+                goods.setCartVenderId(matcher.group(1));
+                goods.setCartNum(Integer.parseInt(matcher.group(3)));
+                goods.setPtype(matcher.group(4));
+                String promoId = matcher.group(5);
+                goods.setPromoID(StrUtil.isNotBlank(promoId) ? promoId : "0");
+                goods.setTargetId(StrUtil.isNotBlank(promoId) ? promoId : "0");
+                goods.setInCart(true);
+            }
+        }
+    }
+
+    /**
+     * 加购，改数量，取消勾选
+     */
+    public void addCartAndChangeNumAndCancelAll() {
+        try {
+            addCartLatch.await();
+            // 取出购物车已经有信息
+            getCartGoods();
+            // 加入购物车
+            Iterator<Map.Entry<String, Goods>> iterator = Storage.goodsMap.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, Goods> entry = iterator.next();
+                if (!entry.getValue().isInCart()) {
+                    if (!addCart(entry.getValue())) {
+                        // 商品不能加入购物车，删除
+                        iterator.remove();
+                    }
+                }
+            }
+            // 取出购物车已经有信息
+            getCartGoods();
+            // 修改购物车数量
+            for (Map.Entry<String, Goods> entry : Storage.goodsMap.entrySet()) {
+                if (!entry.getValue().getCartNum().equals(entry.getValue().getNum())) {
+                    // 修改数量
+                    changeCartNum(entry.getValue());
+                }
+            }
+            // 取消全部勾选
+            cancelAllGoods();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
     }
 
     /**
@@ -177,8 +309,25 @@ public class JDScan {
      * @param goods
      * @return
      */
-    private boolean addCart(Goods goods) {
-        Http.getResponse(StrUtil.format(Constant.CART_URL, goods.getSku()));
+    private synchronized boolean addCart(Goods goods) {
+        // 加购太快会失败，不能多线程
+        for (int i = 0; i < 3; i++) {
+            Response response = Http.getResponse(StrUtil.format(Constant.ADD_CART_URL,
+                    System.currentTimeMillis(), goods.getSku(), System.currentTimeMillis()));
+            try {
+                TimeUnit.MILLISECONDS.sleep(200);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            Matcher matcher = Constant.CART_SUCCESS_PATTERN.matcher(response.getBody());
+            if (matcher.find()) {
+                log.info("sku:{}，「{}」加入购物车成功", goods.getSku(), goods.getName());
+                return true;
+            } else {
+                log.info("sku:{}，「{}」加入购物车失败", goods.getSku(), goods.getName());
+                log.info(response.toString());
+            }
+        }
         return false;
     }
 
@@ -258,7 +407,7 @@ public class JDScan {
         Map<String, String> map = new HashMap<>();
         map.put("Host", "passport.jd.com");
         map.put("Referer", "https://passport.jd.com/uc/login?ltype=logout");
-        Response response = Http.getResponse(StrUtil.format(Constant.QR_TICKET_VALIDATION_URL
+        Http.getResponse(StrUtil.format(Constant.QR_TICKET_VALIDATION_URL
                 , Storage.config.getTicket()), null, map);
         Storage.config.setIsLogin(true);
         Storage.config.setCookieTime(DateUtil.formatDateTime(new Date()));
@@ -299,8 +448,11 @@ public class JDScan {
      * 获取预下单信息，使用 Firefox，chrome 会有问题
      */
     private void getPreSumbit() {
+        FirefoxProfile profile = new FirefoxProfile();
+        profile.setPreference("general.useragent.override", Storage.config.getUserAgent());
         FirefoxOptions options = new FirefoxOptions();
         options.setHeadless(true);
+        options.setProfile(profile);
         WebDriver driver = new FirefoxDriver(options);
         driver.get(Constant.LOGION_URL);
         for (Cookie cookie : Storage.config.getBasicCookieStore().getCookies()) {
@@ -337,6 +489,8 @@ public class JDScan {
             checkLoginAndExit();
             // 检查是上下架
             initGoodsData();
+            // 加入购物车并改数量并勾选
+            addCartAndChangeNumAndCancelAll();
             // 获取下单信息
             getPreSumbit();
             // 保存登录信息到文件
@@ -417,12 +571,12 @@ public class JDScan {
                                 continue;
                             }
                             Goods goods = Storage.goodsMap.get(sku);
-                            if (blockingQueue.contains(goods)) {
+                            if (buyBlockingQueue.contains(goods)) {
                                 continue;
                             }
-                            log.info("{}有货，开始下单购买", goods.getSku());
-                            if (!blockingQueue.offer(goods)) {
-                                log.info("购买队列满放弃购买");
+                            log.info("sku:{}「{}」有货，开始下单购买", goods.getSku(), goods.getName());
+                            if (!buyBlockingQueue.offer(goods)) {
+                                log.info("sku:{}「{}」购买队列满放弃购买", goods.getSku(), goods.getName());
                             }
                         }
                     } finally {
@@ -494,9 +648,9 @@ public class JDScan {
                                 goods.getCat(), Storage.config.getArea(), goods.getNum());
                         Response response = Http.getResponse(url);
                         if (!Constant.STOCK_STATE_PATTERN.matcher(response.getBody()).find()) {
-                            if (!blockingQueue.contains(goods)) {
+                            if (!buyBlockingQueue.contains(goods)) {
                                 log.info("{}有货，开始下单购买", goods.getSku());
-                                if (!blockingQueue.offer(goods)) {
+                                if (!buyBlockingQueue.offer(goods)) {
                                     log.info("购买队列满放弃购买");
                                 }
                             }
@@ -540,6 +694,12 @@ public class JDScan {
                         goods.setNum(1);
                     }
                     Response response = Http.getResponse(StrUtil.format(Constant.GOODS_URL, goods.getSku()));
+                    if (!response.getStatusCode().equals(HttpStatus.SC_OK)) {
+                        Storage.goodsMap.remove(goods.getSku());
+                        log.info("sku:{}，「{}」不支持的商品，总下架数{}", goods.getSku(),
+                                goods.getName(), takeOffCount.incrementAndGet());
+                        return;
+                    }
                     String body = response.getBody();
                     Matcher goodsNameMatcher = Constant.GOODS_NAME_PATTERN.matcher(body);
                     if (goodsNameMatcher.find()) {
@@ -548,14 +708,10 @@ public class JDScan {
 
                     Matcher takeOffPattern = Constant.TAKEOFF_PATTERN.matcher(body);
                     if (takeOffPattern.find()) {
-                        try {
-                            Storage.goodsMap.remove(goods.getSku());
-                        } finally {
-                            log.info("sku:{}，「{}」已经下架，总下架数{}", goods.getSku(),
-                                    goods.getName(), takeOffCount.incrementAndGet());
-                            latch.countDown();
-                            return;
-                        }
+                        Storage.goodsMap.remove(goods.getSku());
+                        log.info("sku:{}，「{}」已经下架，总下架数{}", goods.getSku(),
+                                goods.getName(), takeOffCount.incrementAndGet());
+                        return;
                     }
                     Matcher venderIdMatcher = Constant.VENDERID_PATTERN.matcher(body);
                     if (venderIdMatcher.find()) {
@@ -575,15 +731,17 @@ public class JDScan {
         }
         try {
             latch.await();
-            log.info("商品数据检测完成");
+            log.info("商品数据检测完成，总商品数{}，下架数{}，在售数{}", goodsList.length, takeOffCount.get(), stockCount.get());
             e.shutdown();
         } catch (InterruptedException ex) {
             ex.printStackTrace();
+        } finally {
+            addCartLatch.countDown();
         }
     }
-//endregion
+    //endregion
 
-//region 发送消息
+    //region 发送消息
 
     /**
      * 发送消息
