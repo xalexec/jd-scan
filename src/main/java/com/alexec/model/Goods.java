@@ -20,6 +20,6 @@ public class Goods {
     private String ptype;
     private String targetId;
     private String promoID;
-    private boolean inCart;
+    private Boolean inCart;
     private Integer cartNum;
 }

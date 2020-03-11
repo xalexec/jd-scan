@@ -34,7 +34,8 @@ import java.util.regex.Matcher;
 @Slf4j
 public class JDScan {
     BlockingQueue<Goods> buyBlockingQueue = new ArrayBlockingQueue(10);
-    CountDownLatch addCartLatch = new CountDownLatch(1);
+    Semaphore addCartSemaphore = new Semaphore(0);
+
     // region 初始化
 
     /**
@@ -45,7 +46,11 @@ public class JDScan {
         String configPath = path + "/config";
         if (FileUtil.exist(configPath)) {
             String data = FileUtil.readUtf8String(configPath);
-            Storage.config = ObjectUtil.deserialize(Base64.decode(data));
+            try {
+                Storage.config = ObjectUtil.deserialize(Base64.decode(data));
+            } catch (Exception e) {
+                Storage.config = new Config();
+            }
         }
         ClassPathResource resource = new ClassPathResource("application.properties");
         Properties properties = new Properties();
@@ -63,6 +68,7 @@ public class JDScan {
         Long interval = Long.valueOf(properties.get("interval").toString());
         Integer threadMaxNums = Integer.valueOf(properties.get("thread_max_nums").toString());
         Long checkInterval = Long.valueOf(properties.get("check_interval").toString());
+        Boolean headless = Boolean.valueOf(properties.get("headless").toString());
 
         if (StrUtil.isBlank(area)) {
             log.error("area 配置格式不正确");
@@ -85,6 +91,8 @@ public class JDScan {
         Storage.config.setThreadMaxNums(threadMaxNums);
         Storage.config.setCheckInterval(checkInterval);
         Storage.config.setUserAgent(userAgent);
+        Storage.config.setHeadless(headless);
+
         if (needReLogin(Storage.config)) {
             Storage.config.setTicket("");
             Storage.config.setIsLogin(false);
@@ -177,6 +185,7 @@ public class JDScan {
 
     /**
      * 修改购物车中的数量
+     *
      * @param goods
      * @return
      */
@@ -230,7 +239,7 @@ public class JDScan {
      *
      * @param goods
      */
-    private void selectGoods(Goods goods) {
+    private synchronized void selectGoods(Goods goods) {
         Map<String, String> header = new HashMap<>();
         header.put("Referer", "https://cart.jd.com/cart");
 
@@ -272,14 +281,14 @@ public class JDScan {
      */
     public void addCartAndChangeNumAndCancelAll() {
         try {
-            addCartLatch.await();
+            addCartSemaphore.acquire();
             // 取出购物车已经有信息
             getCartGoods();
             // 加入购物车
             Iterator<Map.Entry<String, Goods>> iterator = Storage.goodsMap.entrySet().iterator();
             while (iterator.hasNext()) {
                 Map.Entry<String, Goods> entry = iterator.next();
-                if (!entry.getValue().isInCart()) {
+                if (!entry.getValue().getInCart()) {
                     if (!addCart(entry.getValue())) {
                         // 商品不能加入购物车，删除
                         iterator.remove();
@@ -448,10 +457,16 @@ public class JDScan {
      * 获取预下单信息，使用 Firefox，chrome 会有问题
      */
     private void getPreSumbit() {
+        // 购物车没有勾选，直接到下单页会报错
+        for (Map.Entry<String, Goods> entry : Storage.goodsMap.entrySet()) {
+            Goods goods = entry.getValue();
+            selectGoods(goods);
+            break;
+        }
         FirefoxProfile profile = new FirefoxProfile();
         profile.setPreference("general.useragent.override", Storage.config.getUserAgent());
         FirefoxOptions options = new FirefoxOptions();
-        options.setHeadless(true);
+        options.setHeadless(Storage.config.getHeadless());
         options.setProfile(profile);
         WebDriver driver = new FirefoxDriver(options);
         driver.get(Constant.LOGION_URL);
@@ -465,7 +480,6 @@ public class JDScan {
             }
         }
         driver.get(Constant.ORDER_URL);
-        JavascriptExecutor driver_js = ((JavascriptExecutor) driver);
         String trackId = (String) ((JavascriptExecutor) driver).executeScript("return getTakId()");
         String riskControl = driver.findElement(By.id("riskControl")).getAttribute("value");
         String eid = driver.findElement(By.id("eid")).getAttribute("value");
@@ -475,6 +489,8 @@ public class JDScan {
         Storage.config.getOrderParam().setFp(fp);
         Storage.config.getOrderParam().setRiskControl(riskControl);
         Storage.config.getOrderParam().setTrackId(trackId);
+        // 取消勾选
+        cancelAllGoods();
         log.info("预下单获取成功");
     }
 
@@ -484,6 +500,8 @@ public class JDScan {
     public void refreshAndSaveData() {
         ScheduledExecutorService se = Executors.newSingleThreadScheduledExecutor(
                 new NamedThreadFactory("refresh-single-pool", false));
+        ScheduledExecutorService preSe = Executors.newSingleThreadScheduledExecutor(
+                new NamedThreadFactory("getpre-sumbit-pool", false));
         se.scheduleWithFixedDelay(() -> {
             // 检查登录
             checkLoginAndExit();
@@ -491,11 +509,14 @@ public class JDScan {
             initGoodsData();
             // 加入购物车并改数量并勾选
             addCartAndChangeNumAndCancelAll();
+        }, 5, Storage.config.getCheckInterval(), TimeUnit.MINUTES);
+
+        preSe.scheduleWithFixedDelay(() -> {
             // 获取下单信息
             getPreSumbit();
             // 保存登录信息到文件
             saveData();
-        }, 5, Storage.config.getCheckInterval(), TimeUnit.MINUTES);
+        }, 1, 600, TimeUnit.MINUTES);
     }
 
     /**
@@ -505,6 +526,7 @@ public class JDScan {
         String path = this.getClass().getResource("/").getPath() + "/config";
         String config = Base64.encode(ObjectUtil.serialize(Storage.config));
         FileUtil.writeUtf8String(config, path);
+        log.info("数据存储完成");
     }
 
     /**
@@ -528,7 +550,7 @@ public class JDScan {
      */
     public void checkStockState() {
         ExecutorService e = new ThreadPoolExecutor(Storage.config.getThreadMaxNums(),
-                Storage.config.getThreadMaxNums() + 10,
+                Storage.config.getThreadMaxNums() + Storage.config.getThreadMaxNums() / 2,
                 5, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(100),
                 new NamedThreadFactory("check-stock-executor", false));
         ScheduledExecutorService se = Executors.newSingleThreadScheduledExecutor(
@@ -736,7 +758,7 @@ public class JDScan {
         } catch (InterruptedException ex) {
             ex.printStackTrace();
         } finally {
-            addCartLatch.countDown();
+            addCartSemaphore.release();
         }
     }
     //endregion

@@ -25,4 +25,5 @@ public class Config implements Serializable {
     private Integer threadMaxNums;
     private Long checkInterval;
     private String userAgent;
+    private Boolean headless;
 }

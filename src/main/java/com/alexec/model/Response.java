@@ -10,7 +10,6 @@ import java.awt.image.BufferedImage;
 @Builder
 public class Response {
     private String body;
-    private String cookie;
     private Header[] header;
     private BufferedImage bufferedImage;
     private Integer statusCode;
