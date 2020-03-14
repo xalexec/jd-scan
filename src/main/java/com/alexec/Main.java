@@ -10,10 +10,6 @@ public class Main {
         jd.login();
         // 扫描上下架和商品信息 检查登录 获取预下单信息 保存登录信息到文件
         jd.refreshAndSaveData();
-        // 扫描上下架和商品信息
-        jd.initGoodsData();
-        // 加购，改数量，取消勾选
-        jd.addCartAndChangeNumAndCancelAll();
         // 检查库存
         jd.checkStockState();
         // 下单

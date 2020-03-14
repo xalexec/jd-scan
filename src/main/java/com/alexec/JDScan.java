@@ -33,19 +33,17 @@ import java.util.regex.Matcher;
 
 @Slf4j
 public class JDScan {
-    BlockingQueue<Goods> buyBlockingQueue = new ArrayBlockingQueue(10);
-    Semaphore addCartSemaphore = new Semaphore(0);
-
+    final BlockingQueue<Goods> buyBlockingQueue = new ArrayBlockingQueue(10);
+    final Semaphore addCartSemaphore = new Semaphore(0);
+    final Object lock = new Object();
     // region 初始化
 
     /**
      * 初始化数据，从缓存中读登录信息，读取配置
      */
     public void init() {
-        String path = this.getClass().getResource("/").getPath();
-        String configPath = path + "/config";
-        if (FileUtil.exist(configPath)) {
-            String data = FileUtil.readUtf8String(configPath);
+        if (FileUtil.exist(Constant.CONFIG_PATH)) {
+            String data = FileUtil.readUtf8String(Constant.CONFIG_PATH);
             try {
                 Storage.config = ObjectUtil.deserialize(Base64.decode(data));
             } catch (Exception e) {
@@ -113,23 +111,24 @@ public class JDScan {
                                 - config.getCookieExpiry() * 60 * 1000)));
     }
     // endregion
+
     // region 下单相关
 
     /**
      * 加购物车，购买
      */
     public void buy() {
-        ScheduledExecutorService sc = Executors.newSingleThreadScheduledExecutor(
+        ExecutorService buyExecutor = Executors.newSingleThreadExecutor(
                 new NamedThreadFactory("buy-single-pool", false));
 
-        sc.execute(() -> {
+        buyExecutor.execute(() -> {
             for (; ; ) {
                 try {
                     // 重试三次
                     Goods goods = buyBlockingQueue.take();
                     for (int i = 0; i < 3; i++) {
                         synchronized (this) {
-                            log.info("开始第{}次尝试购买{}「{}」，", i + 1, goods.getSku(), goods.getName());
+                            log.info("开始第{}次尝试购买，sku:{}「{}」，", i + 1, goods.getSku(), goods.getName());
                             selectGoods(goods);
                             if (!submit(goods)) {
                                 cancelAllGoods();
@@ -177,7 +176,7 @@ public class JDScan {
                     .build());
             return true;
         } else {
-            log.info("{}「{}」下单失败，失败原因请查看输出", goods.getSku(), goods.getName());
+            log.info("下单失败，失败原因请查看输出，{}「{}」", goods.getSku(), goods.getName());
             log.info(response.toString());
         }
         return false;
@@ -190,31 +189,33 @@ public class JDScan {
      * @return
      */
     private synchronized boolean changeCartNum(Goods goods) {
-        Map<String, String> header = new HashMap<>();
-        header.put("Referer", "https://cart.jd.com/cart");
+        for (int i = 0; i < 3; i++) {
+            Map<String, String> header = new HashMap<>();
+            header.put("Referer", "https://cart.jd.com/cart");
 
-        Map<String, String> map = new HashMap<>();
-        map.put("t", "0");
-        map.put("venderId", goods.getCartVenderId());
-        map.put("pid", goods.getSku());
-        map.put("pcount", String.valueOf(goods.getNum()));
-        map.put("ptype", goods.getPtype());
-        map.put("targetId", goods.getTargetId());
-        map.put("promoID", goods.getPromoID());
-        map.put("outSkus", "");
-        map.put("random", String.valueOf(System.currentTimeMillis()));
-        map.put("locationId", Storage.config.getArea());
+            Map<String, String> map = new HashMap<>();
+            map.put("t", "0");
+            map.put("venderId", goods.getCartVenderId());
+            map.put("pid", goods.getSku());
+            map.put("pcount", String.valueOf(goods.getNum()));
+            map.put("ptype", goods.getPtype());
+            map.put("targetId", goods.getTargetId());
+            map.put("promoID", goods.getPromoID());
+            map.put("outSkus", "");
+            map.put("random", String.valueOf(System.currentTimeMillis()));
+            map.put("locationId", Storage.config.getArea());
 
-        Response response = Http.getResponse(Constant.CHANGE_NUM_CART_URL, map, header);
-        try {
-            TimeUnit.MILLISECONDS.sleep(200);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-        if (Constant.CHANGE_CART_NUM_SUCCESS_PATTERN.matcher(response.getBody()).find()) {
-            return true;
-        } else {
-            log.info("sku:{}，「{}」修改数量失败", goods.getSku(), goods.getName());
+            Response response = Http.getResponse(Constant.CHANGE_NUM_CART_URL, map, header);
+            try {
+                TimeUnit.MILLISECONDS.sleep(200);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            if (Constant.CHANGE_CART_NUM_SUCCESS_PATTERN.matcher(response.getBody()).find()) {
+                return true;
+            } else {
+                log.info("修改数量失败，sku:{}「{}」", goods.getSku(), goods.getName());
+            }
         }
         return false;
     }
@@ -279,7 +280,7 @@ public class JDScan {
     /**
      * 加购，改数量，取消勾选
      */
-    public void addCartAndChangeNumAndCancelAll() {
+    private void addCartAndChangeNumAndCancelAll() {
         try {
             addCartSemaphore.acquire();
             // 取出购物车已经有信息
@@ -288,7 +289,7 @@ public class JDScan {
             Iterator<Map.Entry<String, Goods>> iterator = Storage.goodsMap.entrySet().iterator();
             while (iterator.hasNext()) {
                 Map.Entry<String, Goods> entry = iterator.next();
-                if (!entry.getValue().getInCart()) {
+                if (null == entry.getValue().getInCart() || !entry.getValue().getInCart()) {
                     if (!addCart(entry.getValue())) {
                         // 商品不能加入购物车，删除
                         iterator.remove();
@@ -306,10 +307,10 @@ public class JDScan {
             }
             // 取消全部勾选
             cancelAllGoods();
+            log.info("加购物车检查完成");
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-
     }
 
     /**
@@ -330,10 +331,10 @@ public class JDScan {
             }
             Matcher matcher = Constant.CART_SUCCESS_PATTERN.matcher(response.getBody());
             if (matcher.find()) {
-                log.info("sku:{}，「{}」加入购物车成功", goods.getSku(), goods.getName());
+                log.info("加入购物车成功，sku:{}「{}」", goods.getSku(), goods.getName());
                 return true;
             } else {
-                log.info("sku:{}，「{}」加入购物车失败", goods.getSku(), goods.getName());
+                log.info("加入购物车失败，sku:{}，「{}」", goods.getSku(), goods.getName());
                 log.info(response.toString());
             }
         }
@@ -434,8 +435,10 @@ public class JDScan {
                     .build());
             Storage.config.setIsLogin(false);
             saveData();
+            log.info("登录已经过期了，程序自动退出");
             System.exit(0);
         }
+        log.info("检查登录完成");
     }
 
     /**
@@ -498,24 +501,39 @@ public class JDScan {
      * 刷新信息
      */
     public void refreshAndSaveData() {
-        ScheduledExecutorService se = Executors.newSingleThreadScheduledExecutor(
+        ScheduledExecutorService refreshSe = Executors.newSingleThreadScheduledExecutor(
                 new NamedThreadFactory("refresh-single-pool", false));
-        ScheduledExecutorService preSe = Executors.newSingleThreadScheduledExecutor(
-                new NamedThreadFactory("getpre-sumbit-pool", false));
-        se.scheduleWithFixedDelay(() -> {
-            // 检查登录
-            checkLoginAndExit();
-            // 检查是上下架
-            initGoodsData();
-            // 加入购物车并改数量并勾选
-            addCartAndChangeNumAndCancelAll();
-        }, 5, Storage.config.getCheckInterval(), TimeUnit.MINUTES);
+        ScheduledExecutorService preSubSe = Executors.newSingleThreadScheduledExecutor(
+                new NamedThreadFactory("getpresumbit-single-pool", false));
+        ExecutorService checkGoodsExecutor = new ThreadPoolExecutor(4, 8,
+                0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(200),
+                new NamedThreadFactory("init-goods-executor", false));
+        refreshSe.scheduleWithFixedDelay(() -> {
+            try {
+                // 检查登录
+                checkLoginAndExit();
+                // 检查是上下架
+                initGoodsData(checkGoodsExecutor);
+                // 加入购物车并改数量并勾选
+                addCartAndChangeNumAndCancelAll();
+                // 保存登录信息到文件
+                saveData();
+            } catch (Exception e) {
+                e.printStackTrace();
+                log.error(e.getMessage());
+            }
+        }, 0, Storage.config.getCheckInterval(), TimeUnit.MINUTES);
 
-        preSe.scheduleWithFixedDelay(() -> {
-            // 获取下单信息
-            getPreSumbit();
-            // 保存登录信息到文件
-            saveData();
+        preSubSe.scheduleWithFixedDelay(() -> {
+            try {
+                // 获取下单信息
+                getPreSumbit();
+                // 保存登录信息到文件
+                saveData();
+            } catch (Exception e) {
+                e.printStackTrace();
+                log.error(e.getMessage());
+            }
         }, 1, 600, TimeUnit.MINUTES);
     }
 
@@ -523,9 +541,8 @@ public class JDScan {
      * 保存config 到缓存
      */
     private void saveData() {
-        String path = this.getClass().getResource("/").getPath() + "/config";
         String config = Base64.encode(ObjectUtil.serialize(Storage.config));
-        FileUtil.writeUtf8String(config, path);
+        FileUtil.writeUtf8String(config, Constant.CONFIG_PATH);
         log.info("数据存储完成");
     }
 
@@ -543,24 +560,27 @@ public class JDScan {
     }
     //endregion
 
-    //region 库存相关
+    // region 库存相关
 
     /**
      * 刷新库存
      */
     public void checkStockState() {
-        ExecutorService e = new ThreadPoolExecutor(Storage.config.getThreadMaxNums(),
+        ExecutorService checkExecutor = new ThreadPoolExecutor(Storage.config.getThreadMaxNums(),
                 Storage.config.getThreadMaxNums() + Storage.config.getThreadMaxNums() / 2,
                 5, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(100),
                 new NamedThreadFactory("check-stock-executor", false));
-        ScheduledExecutorService se = Executors.newSingleThreadScheduledExecutor(
+        ScheduledExecutorService scheduledExecutor = Executors.newSingleThreadScheduledExecutor(
                 new NamedThreadFactory("scheduled-check-single-pool", false));
         AtomicInteger count = new AtomicInteger(0);
 
-        se.scheduleAtFixedRate(() -> {
+        scheduledExecutor.scheduleAtFixedRate(() -> {
             // >100个 sku 后不返回
             double limit = 90d;
             int goodsCount = Storage.goodsMap.size();
+            if (goodsCount < 1) {
+                return;
+            }
             int batchs = (int) Math.ceil(Math.ceil(goodsCount / limit));
 
             List<String> array = new ArrayList(Storage.goodsMap.keySet());
@@ -574,7 +594,7 @@ public class JDScan {
                     stringBuilder.append(",");
                 }
 
-                e.execute(() -> {
+                checkExecutor.execute(() -> {
                     try {
                         String url = StrUtil.format(Constant.STOCKS_URL,
                                 Storage.config.getArea(),
@@ -593,14 +613,19 @@ public class JDScan {
                                 continue;
                             }
                             Goods goods = Storage.goodsMap.get(sku);
-                            if (buyBlockingQueue.contains(goods)) {
-                                continue;
-                            }
-                            log.info("sku:{}「{}」有货，开始下单购买", goods.getSku(), goods.getName());
-                            if (!buyBlockingQueue.offer(goods)) {
-                                log.info("sku:{}「{}」购买队列满放弃购买", goods.getSku(), goods.getName());
+                            synchronized (lock) {
+                                if (buyBlockingQueue.contains(goods)) {
+                                    continue;
+                                }
+                                log.info("开始下单购买，sku:{}「{}」", goods.getSku(), goods.getName());
+                                if (!buyBlockingQueue.offer(goods)) {
+                                    log.info("购买队列满放弃购买，sku:{}「{}」", goods.getSku(), goods.getName());
+                                }
                             }
                         }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        log.error(e.getMessage());
                     } finally {
                         latch.countDown();
                     }
@@ -608,7 +633,7 @@ public class JDScan {
             }
             try {
                 latch.await(3, TimeUnit.SECONDS);
-                log.info("第{}次查询完成，在售数量:{}，用时:{}ms", count.incrementAndGet(),
+                log.info("第{}次查询完成，监控:{}，用时:{}ms", count.incrementAndGet(),
                         goodsCount, System.currentTimeMillis() - start);
             } catch (
                     InterruptedException ex) {
@@ -671,7 +696,7 @@ public class JDScan {
                         Response response = Http.getResponse(url);
                         if (!Constant.STOCK_STATE_PATTERN.matcher(response.getBody()).find()) {
                             if (!buyBlockingQueue.contains(goods)) {
-                                log.info("{}有货，开始下单购买", goods.getSku());
+                                log.info("开始下单购买，sku:{}「」", goods.getSku(), goods.getName());
                                 if (!buyBlockingQueue.offer(goods)) {
                                     log.info("购买队列满放弃购买");
                                 }
@@ -694,76 +719,74 @@ public class JDScan {
         }, 100, 10000, TimeUnit.MICROSECONDS);
     }
 
-    public void initGoodsData() {
-        String goodsListString = Storage.config.getSkuids();
-        String[] goodsList = goodsListString.split(",");
-        ExecutorService e = new ThreadPoolExecutor(10, 20,
-                0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(500),
-                new NamedThreadFactory("init-goods-executor", false));
-        CountDownLatch latch = new CountDownLatch(goodsList.length);
-        AtomicInteger stockCount = new AtomicInteger(0);
-        AtomicInteger takeOffCount = new AtomicInteger(0);
-
-        for (String item : goodsList) {
-            e.execute(() -> {
-                try {
-                    String[] goodsAndNum = item.split(":");
-                    Goods goods = new Goods();
-                    goods.setSku(goodsAndNum[0]);
-                    if (goodsAndNum.length > 1) {
-                        goods.setNum(Integer.parseInt(goodsAndNum[1]));
-                    } else {
-                        goods.setNum(1);
-                    }
-                    Response response = Http.getResponse(StrUtil.format(Constant.GOODS_URL, goods.getSku()));
-                    if (!response.getStatusCode().equals(HttpStatus.SC_OK)) {
-                        Storage.goodsMap.remove(goods.getSku());
-                        log.info("sku:{}，「{}」不支持的商品，总下架数{}", goods.getSku(),
-                                goods.getName(), takeOffCount.incrementAndGet());
-                        return;
-                    }
-                    String body = response.getBody();
-                    Matcher goodsNameMatcher = Constant.GOODS_NAME_PATTERN.matcher(body);
-                    if (goodsNameMatcher.find()) {
-                        goods.setName(UnicodeUtil.toString(goodsNameMatcher.group(1)));
-                    }
-
-                    Matcher takeOffPattern = Constant.TAKEOFF_PATTERN.matcher(body);
-                    if (takeOffPattern.find()) {
-                        Storage.goodsMap.remove(goods.getSku());
-                        log.info("sku:{}，「{}」已经下架，总下架数{}", goods.getSku(),
-                                goods.getName(), takeOffCount.incrementAndGet());
-                        return;
-                    }
-                    Matcher venderIdMatcher = Constant.VENDERID_PATTERN.matcher(body);
-                    if (venderIdMatcher.find()) {
-                        goods.setVenderId(venderIdMatcher.group(1));
-                    }
-                    Matcher catMatcher = Constant.CAT_PATTERN.matcher(body);
-                    if (catMatcher.find()) {
-                        goods.setCat(catMatcher.group(1));
-                    }
-                    log.info("sku:{}，「{}」在售，总在售数{}", goods.getSku(),
-                            goods.getName(), stockCount.incrementAndGet());
-                    Storage.goodsMap.put(goods.getSku(), goods);
-                } finally {
-                    latch.countDown();
-                }
-            });
-        }
+    private void initGoodsData(ExecutorService executor) {
         try {
+            String goodsListString = Storage.config.getSkuids();
+            String[] goodsList = goodsListString.split(",");
+
+            CountDownLatch latch = new CountDownLatch(goodsList.length);
+            AtomicInteger stockCount = new AtomicInteger(0);
+            AtomicInteger takeOffCount = new AtomicInteger(0);
+
+            for (String item : goodsList) {
+                executor.execute(() -> {
+                    try {
+                        String[] goodsAndNum = item.split(":");
+                        Goods goods = new Goods();
+                        goods.setSku(goodsAndNum[0]);
+                        if (goodsAndNum.length > 1) {
+                            goods.setNum(Integer.parseInt(goodsAndNum[1]));
+                        } else {
+                            goods.setNum(1);
+                        }
+                        Response response = Http.getResponse(StrUtil.format(Constant.GOODS_URL, goods.getSku()));
+                        if (null == response || !response.getStatusCode().equals(HttpStatus.SC_OK)) {
+                            Storage.goodsMap.remove(goods.getSku());
+                            log.info("总{}，监控{}，放弃{}，sku:{}「{}」", goodsList.length, stockCount.get(),
+                                    takeOffCount.incrementAndGet(), goods.getSku(), "获取商品超时");
+                            return;
+                        }
+                        String body = response.getBody();
+                        Matcher goodsNameMatcher = Constant.GOODS_NAME_PATTERN.matcher(body);
+                        if (goodsNameMatcher.find()) {
+                            goods.setName(UnicodeUtil.toString(goodsNameMatcher.group(1)));
+                        }
+
+                        Matcher takeOffPattern = Constant.TAKEOFF_PATTERN.matcher(body);
+                        if (takeOffPattern.find()) {
+                            Storage.goodsMap.remove(goods.getSku());
+                            log.info("总{}，监控{}，放弃{}，sku:{}「{}」", goodsList.length, stockCount.get(),
+                                    takeOffCount.incrementAndGet(), goods.getSku(), goods.getName());
+                            return;
+                        }
+                        Matcher venderIdMatcher = Constant.VENDERID_PATTERN.matcher(body);
+                        if (venderIdMatcher.find()) {
+                            goods.setVenderId(venderIdMatcher.group(1));
+                        }
+                        Matcher catMatcher = Constant.CAT_PATTERN.matcher(body);
+                        if (catMatcher.find()) {
+                            goods.setCat(catMatcher.group(1));
+                        }
+                        log.info("总{}，监控{}，放弃{}，sku:{}「{}」", goodsList.length, stockCount.incrementAndGet(),
+                                takeOffCount.get(), goods.getSku(), goods.getName());
+                        Storage.goodsMap.put(goods.getSku(), goods);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+
             latch.await();
-            log.info("商品数据检测完成，总商品数{}，下架数{}，在售数{}", goodsList.length, takeOffCount.get(), stockCount.get());
-            e.shutdown();
+            log.info("商品数据检测完成，总{}，监控{}，放弃{}", goodsList.length, stockCount.get(), takeOffCount.get());
         } catch (InterruptedException ex) {
             ex.printStackTrace();
         } finally {
             addCartSemaphore.release();
         }
     }
-    //endregion
+    // endregion
 
-    //region 发送消息
+    // region 发送消息
 
     /**
      * 发送消息
@@ -777,9 +800,9 @@ public class JDScan {
             map.put("desp", new URLEncoder().encode(message.getDesp(), Charset.forName("utf-8")));
 
             Http.getResponse(StrUtil.format(Constant.FTQQ_URL, Storage.config.getSckey()), map, null);
-            log.info("发送下单消息");
+            log.info("发送下单消息，{}", message.getText());
         }
     }
-    //endregion
+    // endregion
 
 }

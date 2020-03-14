@@ -6,6 +6,8 @@ public final class Constant {
     private Constant() {
     }
 
+    public final static String CONFIG_PATH = System.getProperty("user.dir") + "/config";
+
     public final static String LOGION_URL = "https://passport.jd.com/new/login.aspx";
     public final static String CHECK_LOGION_URL = "https://passport.jd.com/loginservice.aspx?method=Login&callback=jsonpLogin&_={}";
 

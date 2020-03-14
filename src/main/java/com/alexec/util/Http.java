@@ -2,6 +2,7 @@ package com.alexec.util;
 
 import com.alexec.Storage;
 import com.alexec.model.Response;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.http.*;
 import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.CredentialsProvider;
@@ -48,6 +49,7 @@ import java.nio.charset.CodingErrorAction;
 import java.util.Arrays;
 import java.util.Map;
 
+@Slf4j
 public class Http {
     final static CloseableHttpClient httpclient = Http.getInstance();
 
@@ -101,11 +103,14 @@ public class Http {
             } else {
                 response.setBody(EntityUtils.toString(res.getEntity(), "UTF-8"));
             }
+            if (log.isDebugEnabled()) {
+                log.debug(response.toString());
+            }
             return response;
         } catch (ClientProtocolException e) {
-            e.printStackTrace();
+            log.error(e.toString());
         } catch (IOException e) {
-            e.printStackTrace();
+            log.error(e.toString());
         }
         return null;
     }
