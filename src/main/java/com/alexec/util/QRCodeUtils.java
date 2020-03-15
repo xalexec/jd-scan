@@ -1,6 +1,8 @@
 package com.alexec.util;
 
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.extra.qrcode.BufferedImageLuminanceSource;
+import com.alexec.model.Constant;
 import com.google.zxing.*;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.common.HybridBinarizer;
@@ -57,9 +59,8 @@ public class QRCodeUtils {
         MultiFormatReader formatReader = new MultiFormatReader();
         Result result = null;
         try {
-            BufferedImage image = Http.
-                    getResponse("https://qr.m.jd.com/show?appid=133&size=147&t="
-                            + System.currentTimeMillis()).getBufferedImage();
+            BufferedImage image = Http.getResponse(StrUtil.format(Constant.QR_URL,
+                    System.currentTimeMillis())).getBufferedImage();
             BinaryBitmap binaryBitmap = new BinaryBitmap(new HybridBinarizer(new BufferedImageLuminanceSource(image)));
             HashMap hints = new HashMap();
             hints.put(EncodeHintType.CHARACTER_SET, "utf-8");//编码

@@ -519,7 +519,6 @@ public class JDScan {
                 // 保存登录信息到文件
                 saveData();
             } catch (Exception e) {
-                e.printStackTrace();
                 log.error(e.getMessage());
             }
         }, 0, Storage.config.getCheckInterval(), TimeUnit.MINUTES);
@@ -531,7 +530,6 @@ public class JDScan {
                 // 保存登录信息到文件
                 saveData();
             } catch (Exception e) {
-                e.printStackTrace();
                 log.error(e.getMessage());
             }
         }, 1, 600, TimeUnit.MINUTES);
@@ -800,7 +798,7 @@ public class JDScan {
             map.put("desp", new URLEncoder().encode(message.getDesp(), Charset.forName("utf-8")));
 
             Http.getResponse(StrUtil.format(Constant.FTQQ_URL, Storage.config.getSckey()), map, null);
-            log.info("发送下单消息，{}", message.getText());
+            log.info("发送消息，{}", message.getText());
         }
     }
     // endregion

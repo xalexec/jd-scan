@@ -11,7 +11,7 @@ public final class Constant {
     public final static String LOGION_URL = "https://passport.jd.com/new/login.aspx";
     public final static String CHECK_LOGION_URL = "https://passport.jd.com/loginservice.aspx?method=Login&callback=jsonpLogin&_={}";
 
-    public final static String QR_URL = "https://qr.m.jd.com/show?appid=133&size=147&t=";
+    public final static String QR_URL = "https://qr.m.jd.com/show?appid=133&size=147&t={}";
     public final static String QR_CHECK_URL = "https://qr.m.jd.com/check?callback={}&appid=133&token={}&_={}";
     public final static String QR_TICKET_VALIDATION_URL = "https://passport.jd.com/uc/qrCodeTicketValidation?t={}";
     public final static String GOODS_URL = "https://item.jd.com/{}.html";
